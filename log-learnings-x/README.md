@@ -10,10 +10,25 @@ Built as a learning project — the full design reasoning and decisions live in
 
 ## How it works
 
-`generate_post` drafts a post → `human_review` pauses and shows it to you →
-approve it, or reject with feedback to regenerate (up to 5 attempts,
-`compact_reviews` condenses the feedback history if it grows large). See
-`notes.md` for the full graph design.
+```
+START ──▶ generate_post ──▶ human_review ──┬─ approved  ──▶ END
+                 ▲                          ├─ exhausted ──▶ END  (5 retries used)
+                 │                          └─ retry ──▶ compact_reviews ──┘
+                 └───────────────────────────────────────────┘
+```
+
+`generate_post` drafts a post from `input_text` (plus any prior feedback) →
+`human_review` interrupts the graph and shows it to you → you approve it, or
+reject with feedback to regenerate. After 5 rejected attempts the graph ends
+anyway and returns the last draft. `compact_reviews` condenses the feedback
+history before each retry so a long back-and-forth doesn't blow up the
+prompt. See `notes.md` for the full design writeup.
+
+## Requirements
+
+- Python 3.10+
+- An OpenAI API key (the agent calls `langchain-openai` under the hood)
+- A LangSmith API key, only if you want tracing (optional)
 
 ## Setup
 
@@ -33,7 +48,9 @@ python cli.py
 
 Lists any in-progress session to resume, or starts a new one — asks what you
 worked on, shows you the generated post, and lets you approve or send
-feedback to regenerate.
+feedback to regenerate. Session state is checkpointed to `checkpoints.db`
+(SQLite) and session labels to `sessions.json`; both are local, gitignored
+scratch files, safe to delete to start clean.
 
 ## Run it in LangGraph Studio (local, free — no cloud deployment)
 
