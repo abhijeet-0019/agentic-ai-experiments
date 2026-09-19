@@ -32,13 +32,25 @@ prompt. See `notes.md` for the full design writeup.
 
 ## Setup
 
+Check your default `python3` is actually 3.10+ first — on some systems
+(this one included) it defaults to something older like 3.8, which is too
+old for this project:
+
 ```bash
-python3 -m venv venv
+python3 --version   # needs to be 3.10+; if it isn't, use a specific
+                     # newer interpreter instead, e.g. python3.13
+```
+
+```bash
+python3.13 -m venv venv     # swap in whichever 3.10+ interpreter you have
 source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # then edit .env: set OPENAI_API_KEY (and optionally the LangSmith tracing vars)
 ```
+
+If that `venv` creation step fails with `No module named ensurepip`, see
+Troubleshooting below.
 
 ## Run it in the terminal
 
@@ -61,6 +73,30 @@ langgraph dev
 
 Then open the Studio URL printed in the terminal. This is a separate session
 history from the terminal version — see `notes.md` Topic 10 for why.
+
+## Troubleshooting
+
+**`langgraph dev` (or anything else) fails, `venv/bin/langgraph` is
+missing, or `venv/bin/python --version` shows something older than 3.10:**
+the `venv` folder was probably (re)created at some point with the system's
+default `python3` instead of a newer interpreter — easy to do accidentally
+by running `python3 -m venv venv` again. Rebuild it:
+
+```bash
+rm -rf venv
+python3.13 -m venv --without-pip venv   # --without-pip: on this machine,
+                                          # python3.13 can't bootstrap pip
+                                          # on its own (no ensurepip module)
+curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+venv/bin/python /tmp/get-pip.py
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+If your `python3.13 -m venv venv` works fine without an `ensurepip` error,
+you can skip the `--without-pip` + `get-pip.py` steps and just run
+`python3.13 -m venv venv` normally.
 
 ## Project layout
 

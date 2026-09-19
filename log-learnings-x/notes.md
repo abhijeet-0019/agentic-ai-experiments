@@ -308,16 +308,22 @@ one request in, one structured response out. The graph's own loop
 driven by real human turns across separate `invoke`/resume calls, not by
 the LLM calling itself repeatedly within one node execution.
 
-**280-char enforcement — decided approach (v1):** soft enforcement via the
-system prompt instruction, plus a Pydantic validator on `PostThread.posts`
-as hard verification. Important nuance: the validator only runs AFTER
-generation — it catches a violation, it does not prevent one (tool-calling
-structured output constrains JSON shape, not content-level rules like
-string length). **Backlog for later:** if this proves insufficient in
-practice, add a retry-with-feedback loop (catch the `ValidationError`,
-re-call the LLM with the specific violation described, capped at a couple
-of retries) before falling back to any deterministic truncation as a last
-resort.
+**280-char enforcement — v1, then upgraded after a real failure:** soft
+enforcement via the system prompt instruction, plus a Pydantic validator on
+`PostThread.posts` as hard verification. Important nuance: the validator
+only runs AFTER generation — it catches a violation, it does not prevent
+one (tool-calling structured output constrains JSON shape, not
+content-level rules like string length). **v2 (implemented after this
+actually happened live in Studio — a real post came back at 285 chars and
+crashed the run):** `generate_post` now catches `ValidationError`, appends
+a `HumanMessage` describing exactly which rule was violated, and re-invokes
+the LLM — capped at `MAX_SCHEMA_RETRIES = 2` extra attempts. If all
+attempts still fail, the original error is re-raised rather than silently
+falling back to truncation (that stays out of scope, per the original
+decision). This is a self-contained retry loop *inside* `generate_post`,
+not a graph-level regeneration — `re_gen_count` only increments once per
+node call, exactly as before; internal schema-correction attempts are
+invisible to the rest of the graph.
 
 ## 7. Termination semantics — RESOLVED
 
@@ -605,6 +611,43 @@ got back a clean `[]` (not `[[]]`) plus a correctly-shaped `__interrupt__`
 payload identical in spirit to `cli.py`'s; resumed with `{"command":
 {"resume": "y"}}`, got back `"human_decision": "approved"` and a clean
 finish. `cli.py` re-verified working unchanged afterward.
+
+## 11. Post-deployment fix — defending nodes against a partially-seeded state
+
+**Real bug hit live in Studio (not hypothetical):** submitting through Studio's
+own UI form sent only `{"input_text": "..."}` — none of `output`,
+`re_gen_count`, `review_msg` were included. `generate_post` used bracket
+access (`state["output"]`, `state["re_gen_count"]`) assuming `cli.py`'s
+convention of always seeding a complete initial state — but Studio, a
+caller we don't control, doesn't follow that convention. Result:
+`KeyError: 'output'` crashed the run server-side — which also almost
+certainly explains the earlier "redirects to Studio's home page" mystery:
+Studio's UI likely falls back to a default view when a run errors like
+this, rather than surfacing a clear inline message.
+
+**The fix, and why it's narrowly scoped:** `generate_post` now uses
+`state.get(key, default)` for `review_msg`, `output`, and `re_gen_count` —
+the only node that needs this. Every other node (`human_review`,
+`compact_reviews`, the router) only ever runs *after* `generate_post` has
+already executed at least once via a fixed edge, and `generate_post`'s own
+return always guarantees those keys exist by then, regardless of how
+sparse the original caller's seed was. `input_text` deliberately stays
+bracket access — if that's ever missing, it's a genuine caller error worth
+a loud crash, not something to silently default away.
+
+**Lesson, generalized from the Topic 9 seeding bug:** "always seed a
+complete initial state" is a convention we can enforce in code we
+control (`cli.py`), but not in every possible caller (Studio's UI, or any
+future one). The durable fix belongs in the graph's true entry point,
+defending against whatever a caller actually sends — not in every
+caller's discipline.
+
+**Operational gotcha, unrelated to the code:** `langgraph dev` spawns a
+worker subprocess that can survive `pkill -f "langgraph dev"` and keep
+holding port 2024 — check `ss -ltnp | grep 2024` after killing and
+`kill -9` any PID still shown before restarting, or a fresh server may
+silently fail to bind while an old one (with stale `.env` values, since
+env vars are only read once at process start) keeps serving requests.
 
 ## Decisions log
 
