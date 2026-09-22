@@ -71,3 +71,96 @@ So to be precise about the two privileged positions from that U-shaped curve we 
 
 
 ====
+
+
+ Retrieval over past turns — embed each turn/chunk of history, and on each new call retrieve only the top-k most relevant past turns. This is what your "split memory and let the LLM switch" intuition is actually reaching for — but the mechanism isn't the model "switching contexts," it's memory exposed as a tool. You give the agent a search_memory(query) tool; it calls it when it needs something it doesn't have. That answers your open question ("how would the LLM know to switch?") — it doesn't need to know in advance, it just needs the tool available and a description telling it when to reach for it. Same tool-calling machinery from Topic 3, pointed at your own memory store.
+
+====
+
+HOW TO HANDLE CONFLICTS IN RAG
+
+
+prompts are influence, not enforcement
+
+memory consolidation; the Generative Agents research used a periodic "reflection" step that synthesizes raw observations into higher-level facts
+
+- Inject memory as data, not instructions — same delimiter lesson from Topic 2. Memory should be wrapped and framed as "facts on record," never pasted where directive-shaped text would get obeyed.
+
+One more, briefly: memory that's correct but shouldn't be retained — indefinite storage of user facts creates real retention/compliance obligations (right-to-erasure), plus a UX cost when an agent recalls something the user doesn't remember disclosing. Hence user-visible memory dashboards and deletion controls in real products.
+
+"use each layer for what it's actually good at, and never rely on a layer for a guarantee it structurally cannot provide."
+
+The rule that follows: never let the model's own confidence be the trigger for a safety-critical checkpoint. Gate on the action's classification instead. Claude Code is a live example of both — permission prompts on file writes/bash fire because the tool class requires approval, not because Claude felt unsure; Claude asking "did you mean X or Y?" is the other mechanism entirely.
+
+The layered model to hold in your head:
+
+┌─ HUMAN ────────────────────────────────────┐
+│  novel situations, value judgments,        │
+│  accountability for irreversible acts      │
+│  ┌─ CODE ─────────────────────────────┐    │
+│  │  invariants, validation, caps,     │    │
+│  │  allow-lists — makes things        │    │
+│  │  structurally impossible           │    │
+│  │  ┌─ PROMPT ──────────────────┐     │    │
+│  │  │  judgment, nuance, tone,   │     │    │
+│  │  │  the 95% happy path        │     │    │
+│  │  └────────────────────────────┘     │    │
+│  └─────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
+
+You don't pick one. Each layer is designed assuming the layer inside it will fail. Prompt does its best; code catches what the prompt misses; human catches what code can't formalize.
+
+====
+
+
+But here's the properly engineered answer, which is better than "decide who wins": make the operation idempotent, with an idempotency key stored in state. Then even if the model confidently re-requests a send, the system deduplicates it and nothing bad happens.
+
+Notice what just happened — that's the framework from five minutes ago applied directly. You don't write "remember not to send the email twice" in a prompt (shifting probability). You make double-sending structurally impossible via an idempotency key (changing possibility). The model being wrong stops mattering, which is always the stronger design than making the model less likely to be wrong.
+
+====
+
+The fix, now standard practice: contextual enrichment. Before embedding, prepend situating context to each chunk:
+
+▎ "[Refund Policy v3 → Section 4.2 Enterprise Subscriptions → Cancellation and Refunds] ...must be submitted in writing. In such cases, a full refund is issued within 30 days..."
+
+===
+
+Two more practices worth having:
+- Structure-aware splitting — split on headings/sections, never split a table across chunks (half a table with no header row is worthless), keep a list with its introducing sentence.
+- Metadata alongside each chunk — source, page, section, doc_version, last_updated. Enables filtering (search only the current policy version), citation, and staleness handling. That's your Topic 5 provenance instinct applied to documents.
+
+===
+
+Retrieval scoring and attention weighting are completely different mechanisms at different times. You wrote that the LLM "gives the chunk a proper weight when retrieving" — but ranking happens in the vector DB via cosine similarity, with the LLM not running at all. Attention happens later, at generation, over chunks that were already selected. A chunk that loses at retrieval never reaches attention; a chunk that wins retrieval can still be ignored by attention. Keep them separate — you'll debug the wrong stage otherwise.
+
+===
+
+1. "Previous token helps" — yeh thoda causal-model wala framing hai
+Embedding models (jaise BERT-style encoders, jo RAG mein commonly use hote hain) usually bidirectional hote hain — matlab har token saare tokens ko attend karta hai (aage wale bhi, peeche wale bhi), sirf previous wale nahi. "Previous token helps" wala causal/unidirectional masking GPT-jaise decoder models mein hota hai (jahan token sirf apne se pehle wale tokens dekh sakta hai, future nahi — taaki generation ke time "future" leak na ho). Embedding banane ke liye typically bidirectional context zyada useful hota hai kyunki poora chunk ka meaning capture karna hai, generate nahi karna. Toh depend karta hai kaunsa embedding model use ho raha hai, but zyadatar bidirectional hote hain.
+
+===
+
+When RAG is the wrong tool
+
+Your answer — bad document quality, no structure, no references — is a real cause of retrieval failure, but it's a data quality problem: fix the parsing and enrichment and RAG works fine. I was asking about something different: cases where retrieval is the wrong architecture even with perfect documents. Since you flagged being blocked, here it is directly.
+
+1. Questions needing the whole corpus, not pieces of it.
+"How many policy exceptions do we have in total?" Retrieval hands the model 5 chunks out of 4,000. It will confidently count the exceptions in those 5 and give you a number. The number is wrong, and nothing signals that. Top-k can never count, total, or exhaustively summarize — that's architectural, not a tuning issue. Use precomputed aggregates or a map-reduce pass over everything.
+
+2. Structured data and relational questions.
+"What was the average refund amount for enterprise customers last quarter?" That's a SQL query over a database. Embeddings are terrible at numbers — vectors don't do arithmetic, date ranges, or exact comparison. Text-to-SQL is the right tool; semantic search over prose is not.
+
+3. The corpus fits in the context window.
+If your entire policy is 20 pages, just put all of it in the prompt. No chunking, no index, no staleness, no retrieval failures — and with prompt caching (Topic 2) it's cheap on repeat calls. RAG is a workaround for finite context. If you don't have that constraint, don't build the workaround. As context windows grow, this threshold keeps moving, and plenty of RAG systems in production today didn't need to exist.
+
+4. The data changes faster than you can index.
+Inventory levels, ticket status, live prices. Any index is stale the moment it's built. Call the live API as a tool instead. The clean line: RAG is for static-ish knowledge; tools are for live state.
+
+5. You need guaranteed completeness.
+Legal discovery, compliance review — "find every mention of X." Top-k is probabilistic recall by construction; it gives you the most similar, never all. Use exhaustive keyword search.
+
+===
+
+2. Design each tool as a task, not an endpoint. A model handles find_overdue_tickets(team) far better than search(jql) that requires it to compose valid JQL. Push complexity into your server, where it's deterministic code instead of a probabilistic guess.
+
+===
