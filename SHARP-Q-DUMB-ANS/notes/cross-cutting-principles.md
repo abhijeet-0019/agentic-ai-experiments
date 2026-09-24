@@ -206,3 +206,89 @@ The danger always lives in **the gap between model output and system execution**
 — a schema-perfect `{"order_id": "ORD-4471", "amount": 5000}` on a $50 order is
 valid JSON and a $5,000 mistake. Validate values at the boundary; never treat
 "it parsed" as "it's correct."
+
+**The mechanism cuts both ways (Topic 8 lab).** A syntactic guarantee encoding
+the *wrong contract* becomes a syntactic **prison**. A tool schema advertised `q`
+while the Python function took `query`, under `strict: true` — so the model was
+structurally forbidden from sending the correct argument. It retried three times,
+varying the only free parameter it had (the *value* of `q`), and cycled back to a
+call it had already watched fail. Perfectly rational behaviour inside a box with
+no exit. The same mechanism that makes an `enum` safe makes a typo unrecoverable.
+
+---
+
+## 9. In an agent loop, your error messages are prompts
+
+An error string returned from a tool is not diagnostics for a human reading a log
+later. It is **the literal prompt for the next model call.** Its job is not to
+describe what went wrong — it is to make the correct next action obvious.
+
+Decided four separate runs in the Topic 8 lab, in both directions:
+
+```
+Error: 'open_threads' does not exist. Available notes: ['open_threads.md']
+   -> recovered on the very next turn
+
+Error: open_threads does not exist.
+   -> implies "wrong filename"; model guessed .txt when the file was .md,
+      burned three iterations, never recovered
+```
+
+Same failure. The second omits what *does* exist, so the only available repair is
+guessing. **Test every error string a tool can return:** *if this were the only
+new information a competent agent received, would it now do the right thing?*
+
+**The precondition, which matters more than the wording (and which I missed).**
+Before improving an error message, check whether the model **can act on it at
+all**. Some failures are unrecoverable regardless of phrasing, because the fix
+lies outside the action space you handed the model — see the `strict: true`
+prison in #8. A perfect error message would have changed nothing there.
+
+So the order is: **(1) can the model express the fix? (2) does the message name
+the fix?** Skipping (1) and polishing (2) is wasted work.
+
+**Corollary that surprised me:** a good enough error message can make a tool
+redundant. A `read_note` failure that lists the directory does exactly what
+`search_notes` was built for — and the model correctly stopped calling
+`search_notes` at all. (Scale-dependent: true at 1 file, false at 500.)
+
+**Applies equally to success messages.** Returning the exact bytes written
+(`"Appended to X: [timestamp] content"`) rather than a bare `"ok"` is what lets
+the model see what it actually did — including that it just did it twice.
+
+---
+
+## 10. An abstraction doesn't remove a decision — it makes it for you
+
+The real cost of a framework is not lock-in or performance. It is that
+decisions you used to make on purpose become defaults you never learn exist.
+
+Lab 01 wrote `except Exception: return f"Error executing..."` — an explicit
+choice to convert exceptions into text the model can read. Lab 02 got the same
+behaviour only because it was restored deliberately; LangGraph's `ToolNode`
+re-raises anything that isn't a validation error, which would have turned a
+blocked path-traversal into a crashed process.
+
+Three more from the same port, each reversing something lab 01 had decided on
+purpose:
+- `strict` is **off** by default, so a schema `enum` degrades from a syntactic
+  guarantee to a strong suggestion (see #8).
+- Per-argument descriptions are **silently dropped** unless you write
+  `Annotated[str, Field(description=...)]` — and descriptions are what drive
+  tool selection.
+- `InMemorySaver`, the checkpointer every tutorial uses, **dies with the
+  process** — so the durability that justifies the abstraction isn't there.
+
+Also watch for **the knob with the same name that isn't the same knob**: lab 01's
+`MAX_ITERS` counted model calls; `recursion_limit` counts node executions, so
+the equivalent value is `2N − 1`. Renamed *and* rescaled.
+
+**Habit: when adopting an abstraction, list what you were deciding by hand, then
+go find what the abstraction now decides for you.** Anything you cannot locate
+is a default you have silently accepted.
+
+**Corollary — visibility is the first thing taken and the last thing missed.**
+Across the whole raw-loop lab, every single bug was found by reading the request
+payload, and none by reading application code. In a framework, graph state is
+easy to print and the payload is not — it is built below your code.
+**Budget for payload visibility on day one**, whatever you build on.
